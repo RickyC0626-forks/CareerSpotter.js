@@ -13,7 +13,6 @@ def shorten_url(url):
         "destination": url, "domain": {"fullName": "rebrand.ly"}
     }
     API = os.environ.get("REBRANDLY_API")
-    print(API)
     requestHeaders = {
         "Content-type": "application/json",
         "apikey": API,
@@ -25,6 +24,7 @@ def shorten_url(url):
 
     if (r.status_code == requests.codes.ok):
         link = r.json()
+
         return link["shortUrl"]
     else:
-        print(r.status_code)
+        print("can't")

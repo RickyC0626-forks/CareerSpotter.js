@@ -7,34 +7,81 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from selenium.webdriver.firefox.options import Options
 import time
 from bs4 import BeautifulSoup
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import urllib.request
 import selenium
 import lxml
 import json
 import re
-from utils import shorten_url
+from .link_s import shorten_url
 
 
-HEADER = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.11 (KHTML, like Gecko) Chrome/23.0.1271.64 Safari/537.11',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Referer': 'https://cssspritegenerator.com',
-          'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.3',
-          'Accept-Encoding': 'none',
-          'Accept-Language': 'en-US,en;q=0.8',
-          'Connection': 'keep-alive'}
+def get_job_object_sel(posting_url):
+    '''
+        Much more efficient in finding the elements but is slower than bs4
+    '''
+    return_object = {}
+    op = Options()
+    op.headless = True
+    engine = selenium.webdriver.Firefox(options=op)
+    engine.set_page_load_timeout(10)
+    try:
+        engine.get(posting_url)
+        return_object['jobtitle'] = engine.find_element_by_xpath(
+            "//h1[@class='icl-u-xs-mb--xs icl-u-xs-mt--none jobsearch-JobInfoHeader-title']").text
+        name_addr = list(engine.find_element_by_xpath(
+            "//div[@class='jobsearch-InlineCompanyRating icl-u-xs-mt--xs jobsearch-DesktopStickyContainer-companyrating']").find_elements_by_tag_name("div"))
+        if len(name_addr) == 3:
+            return_object['companyname'] = name_addr[0].text
+            return_object['companylocation'] = name_addr[-1].text
+            # return_object['reviews'] = "0 reviews"
+        else:
+            return_object['companyname'] = name_addr[0].text
+            return_object['companylocation'] = name_addr[-1].text
+        return_object['jobdescription'] = engine.find_element_by_xpath(
+            "//div[@id='jobDescriptionText']").text
+        try:
+            apply_button = list(engine.find_element_by_xpath(
+                "//div[@id='applyButtonLinkContainer']").find_elements_by_tag_name('a'))
+            return_object['applylink'] = shorten_url(
+                apply_button[0].get_attribute('href'))
+            low_des = return_object['applylink'].encode(
+                'ascii', 'ignore')
+            hash_text = hashlib.sha224(low_des).hexdigest()
+            return_object["id"] = hash_text
+        except Exception as err:
+            return_object['applylink'] = shorten_url(posting_url)
+            low_des = return_object['applylink'].encode(
+                'ascii', 'ignore')
+            hash_text = hashlib.sha224(low_des).hexdigest()
+            return_object["id"] = hash_text
+        now = datetime.now(timezone.utc)
+        epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+        posix_timestamp_micros = (now - epoch) // timedelta(microseconds=1)
+        posix_timestamp_millis = posix_timestamp_micros // 1000
+        return_object["timestamps"] = posix_timestamp_millis
+    except Exception as err:
+        print(err)
+        engine.close()
+
+    engine.close()
+    return return_object
 
 
 def get_job_object(posting_url):
+    HEADER = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.11 (KHTML, like Gecko) Chrome/23.0.1271.64 Safari/537.11',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Referer': 'https://cssspritegenerator.com',
+              'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.3',
+              'Accept-Encoding': 'none',
+              'Accept-Language': 'en-US,en;q=0.8',
+              'Connection': 'keep-alive'}
     return_object = {}
     request = urllib.request.Request(posting_url, None, HEADER)
     src = urllib.request.urlopen(request).read()
     soup = BeautifulSoup(src, 'lxml')
     return_object['jobtitle'] = soup.findAll('div', class_=re.compile(
         'jobsearch-JobInfoHeader-title-container'))[0].get_text()
-    # this give name and location of the company
-    # return_object["company_name"] = soup.findAll('div', class_=re.compile(
-    #     'icl-u-lg-mr--sm icl-u-xs-mr--xs'))[0].get_text()
     rating_l_div = soup.findAll('div', class_=re.compile(
         'jobsearch-InlineCompanyRating'))[0]
     name_l = []
@@ -51,25 +98,33 @@ def get_job_object(posting_url):
     else:
         return_object['companyname'] = name_l[0]
         return_object['companylocation'] = name_l[-1]
-        # return_object['reviews'] = name_l[1]
     try:
-        apply_link = soup.find(id='applyButtonLinkContainer').find('a')['href']
+        apply_link = soup.find(
+            "div", id='applyButtonLinkContainer').find('a')['href']
         return_object['applylink'] = shorten_url(apply_link)
-    except:
-        print(
-            f'{return_object["companyname"]} doesnt have apply link - from Indeed')
-        return 0
+        print(apply_link)
+        low_des = return_object['applylink'].encode(
+            'ascii', 'ignore')
+        hash_text = hashlib.sha224(low_des).hexdigest()
+        return_object["id"] = hash_text
+
+    except Exception as err:
+        return_object['applylink'] = shorten_url(posting_url)
+        low_des = return_object['applylink'].encode(
+            'ascii', 'ignore')
+        hash_text = hashlib.sha224(low_des).hexdigest()
+        return_object["id"] = hash_text
+
     return_object['jobdescription'] = soup.find(
         'div', class_='jobsearch-jobDescriptionText').get_text()
-    low_des = return_object['applylink'].encode(
-        'ascii', 'ignore')
-    hash_text = hashlib.sha224(low_des).hexdigest()
-    return_object["id"] = hash_text
-    return_object["timestamps"] = datetime.now().timestamp()
+    now = datetime.now(timezone.utc)
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    posix_timestamp_millis = posix_timestamp_micros // 1000
+    return_object["timestamps"] = posix_timestamp_millis
     return return_object
 
 
-def run_indeed():
+def run_indeed(use_sel=False):
     """
         conn : database connection
         limit<int> :  total number of job to add to db 
@@ -117,26 +172,30 @@ def run_indeed():
             print("closing selenium")
             engine.close()
             listing_collection = []
+            if not use_sel:
+                with ThreadPoolExecutor(max_workers=5) as executor:
+                    future = {executor.submit(
+                        get_job_object, i): i for i in job_href}
+                    for f in as_completed(future):
+                        obj = f.result()
+                        listing_collection.append(obj)
 
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                future = {executor.submit(
-                    get_job_object, i): i for i in job_href}
-                for f in as_completed(future):
-                    obj = f.result()
-                    listing_collection.append(obj)
+            else:
+                with ThreadPoolExecutor(max_workers=5) as executor:
+                    future = {executor.submit(
+                        get_job_object_sel, i): i for i in job_href}
+                    for f in as_completed(future):
+                        obj = f.result()
+                        listing_collection.append(obj)
+
             listing_collection = list(
                 filter(lambda x: x != 0, listing_collection))
-
+            print("INDEED RETURNING COLLECTION")
             return listing_collection
-
         except Exception as e:
-            print("Timeout")
+            print("Some err")
             print(f"{e}")
 
     except Exception as e:
         print(f"{e} from indeed")
         print("closing selenium")
-
-
-if __name__ == "__main__":
-    run_indeed()
